@@ -1,9 +1,10 @@
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 import torch
-from transformers import pipeline
 from pyknp import Juman  # JUMAN tokenizer を使用
 import json
+import numpy as np
 from copy import deepcopy
+
 
 class ReadingEstimator:
     def __init__(self, model_name, references, evaluation_type="most_similar"):
@@ -52,32 +53,34 @@ class ReadingEstimator:
                         inputs["input_ids"][0] == self.tokenizer.mask_token_id
                     )[0]
                     reference_logits[kanji][reading].append(
-                        (outputs.logits[0, mask_token_index], text)
+                        (outputs.logits[0, mask_token_index].detach().numpy(), text)
                     )
         return reference_logits
 
     def _get_most_similar_reading(self, kanji, logit):
+        # assert logit == (1, 32000)
         max_similarity = 0
         predicted_reading = None
         # 与えられた漢字に対する全ての読みを確認
         for reading, values in self.reference_logits[kanji].items():
-            for (value, text) in values:
-                similarity = torch.nn.functional.cosine_similarity(
-                    logit, value, dim=1
-                ).item()
+            for value, text in values:
+                # use: cosine similarity
+                similarity = np.dot(logit[0], value[0]) / (
+                    np.linalg.norm(logit) * np.linalg.norm(value)
+                )
                 # print(f"{reading}, {similarity:04f}, {text}")
                 if similarity > max_similarity:
                     max_similarity = similarity
                     predicted_reading = reading
         return predicted_reading
-    
+
     def _get_average_similar_reading(self, kanji, logit):
         max_similarity = 0
         predicted_reading = None
         # 与えられた漢字に対する全ての読みを確認
         for reading, values in self.reference_logits[kanji].items():
             similarity_sum = 0
-            for (value, text) in values:
+            for value, _ in values:
                 similarity_sum += torch.nn.functional.cosine_similarity(
                     logit, value, dim=1
                 ).item()
@@ -112,12 +115,52 @@ class ReadingEstimator:
                 )[0]
                 get_reading = self._get_most_similar_reading if self.evaluation_type == "most_similar" else self._get_average_similar_reading
                 predicted_reading = get_reading(
-                    mrph.midasi, outputs.logits[0, mask_token_index]
+                    mrph.midasi, outputs.logits[0, mask_token_index].detach().numpy()
                 )
                 predicted_readings.append((mrph.midasi, predicted_reading))
             else:
                 predicted_readings.append((mrph.midasi, mrph.yomi))
         return predicted_readings
+
+    def get_optimized_reading(self, word, left_context, right_context, current_reading):
+        """
+        単語が参照データに存在する場合、左文脈と右文脈を考慮して最適な読みを返す。
+        存在しない場合、現在の読み候補をそのまま返す。
+
+        Args:
+            word (str): 対象の単語
+            left_context (str): 単語の左文脈
+            right_context (str): 単語の右文脈
+            current_reading (str): 現在の読み候補
+
+        Returns:
+            str: 最適な読み
+        """
+        # 単語が参照データに存在しない場合は現在の読みを返す
+        if word not in self.references:
+            return current_reading
+
+        # 単語が参照データに存在する場合、コンテキストを用いて最適な読みを決定
+        # 左文脈と右文脈を結合して[MASK]トークンを挿入
+        left_result = self.jumanpp.analysis(left_context)
+        right_result = self.jumanpp.analysis(right_context)
+        left_result = " ".join([item.midasi for item in left_result.mrph_list()])
+        right_result = " ".join([item.midasi for item in right_result.mrph_list()])
+
+        masked_text = f"{left_result} {self.tokenizer.mask_token} {right_result}"
+        inputs = self.tokenizer(masked_text, return_tensors="pt")
+        outputs = self.model(**inputs)
+
+        # MASKトークンの位置を取得
+        mask_token_index = torch.where(
+            inputs["input_ids"][0] == self.tokenizer.mask_token_id
+        )[0]
+
+        # コサイン類似度を用いて最適な読みを取得
+        logit = outputs.logits[0, mask_token_index].detach().numpy()
+        predicted_reading = self._get_most_similar_reading(word, logit)
+
+        return predicted_reading
 
 
 if __name__ == "__main__":
@@ -153,3 +196,13 @@ if __name__ == "__main__":
         print(f"Original text: {text}")
         joined_yomi = "".join([yomi for _, yomi in predicted_readings])
         print(f"Predicted readings: {joined_yomi}")
+
+    # `get_optimized_reading`の使用例
+    word = "水"
+    left_context = "油は"
+    right_context = "を弾く"
+    current_reading = "すい"
+    optimized_reading = predictor.get_optimized_reading(
+        word, left_context, right_context, current_reading
+    )
+    print(f"Optimized Reading: {optimized_reading}")
