@@ -4,6 +4,8 @@ from pyknp import Juman  # JUMAN tokenizer を使用
 import json
 import numpy as np
 from copy import deepcopy
+import os
+import pickle
 
 
 class ReadingEstimator:
@@ -17,6 +19,7 @@ class ReadingEstimator:
              - average: すべての参照データのコサイン類似度の平均が最も高い読みを予測
         """
         self.jumanpp = Juman()  # Jumanを初期化
+        self.model_name = model_name
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForMaskedLM.from_pretrained(model_name)
         self.model.eval()
@@ -162,13 +165,45 @@ class ReadingEstimator:
 
         return predicted_reading
 
+    def save_compiled(self, path="compiled_data.pkl"):
+        """
+        reference_logitsをpickle形式で保存する。
+        Args:
+            path (str): 保存先のパス
+        """
+        data_to_save = {
+            "reference_logits": self.reference_logits,
+            "references": self.references,
+            "evaluation_type": self.evaluation_type,
+            "model_name": self.model_name
+        }
+        with open(path, "wb") as f:
+            pickle.dump(data_to_save, f)
+        print(f"Compiled data saved to {path}")
+
+    def load_compiled(path="compiled_data.pkl"):
+        """
+        pickle形式のデータを読み込み、reference_logitsを復元する。
+        Args:
+            path (str): 読み込むファイルのパス
+        """
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"No compiled data file found at {path}")
+        with open(path, "rb") as f:
+            loaded_data = pickle.load(f)
+        self = ReadingEstimator(loaded_data["model_name"], dict(), loaded_data["evaluation_type"])
+        self.reference_logits = loaded_data["reference_logits"]
+        self.references = loaded_data["references"]
+        print(f"Compiled data loaded from {path}")
+        return self
 
 if __name__ == "__main__":
     # 使用例
     references = json.load(open("references.json", "r"))
     # 「水」以外のkeyを削除
     # references = {key: references[key] for key in references if key == "水"}
-    predictor = ReadingEstimator("ku-nlp/deberta-v2-base-japanese", references, evaluation_type="most_similar")
+    # predictor = ReadingEstimator("ku-nlp/deberta-v2-base-japanese", references, evaluation_type="most_similar")
+    predictor = ReadingEstimator.load_compiled("./predictor.pkl")
 
     texts = [
         "結局世の中は金が全てです",
@@ -206,3 +241,5 @@ if __name__ == "__main__":
         word, left_context, right_context, current_reading
     )
     print(f"Optimized Reading: {optimized_reading}")
+
+    # predictor.save_compiled("./predictor.pkl")
