@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple, Optional, Literal, Any
 
 import numpy as np
 import torch
-from pyknp import Juman
+from rhoknp import Jumanpp
 from transformers import AutoTokenizer, AutoModelForMaskedLM, AutoModel
 
 
@@ -49,7 +49,7 @@ class ReadingEstimator:
       }
     }
 
-    - text は _split_reference() で Juman により形態素分割され、スペース区切りになります。
+    - text は _split_reference() で Jumanpp により形態素分割され、スペース区切りになります。
     - "[MASK]" または "[ MASK ]" は tokenizer.mask_token に置換されます。
     """
 
@@ -83,7 +83,7 @@ class ReadingEstimator:
         if batch_size <= 0:
             raise ValueError("batch_size must be >= 1")
 
-        self.jumanpp = Juman()
+        self.jumanpp = Jumanpp()
         self.model_name = model_name
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -128,8 +128,8 @@ class ReadingEstimator:
         self.reference_vectors = self._calculate_reference_vectors()
 
     def _split_reference(self, text: str) -> str:
-        result = self.jumanpp.analysis(text)
-        spaced = " ".join([mrph.midasi for mrph in result.mrph_list()])
+        result = self.jumanpp.apply_to_sentence(text)
+        spaced = " ".join([mrph.surf for mrph in result.morphemes])
 
         # 表記ゆれをまとめて mask に
         spaced = spaced.replace("[ MASK ]", self.tokenizer.mask_token)
@@ -336,7 +336,7 @@ class ReadingEstimator:
     def get_reading_predictions(self, texts: List[str]) -> List[List[Tuple[str, str]]]:
         """
         複数テキストをまとめて推論（推論はバッチ化して高速化）。
-        - 形態素解析(Juman)はテキストごとに実施
+        - 形態素解析(Jumanpp)はテキストごとに実施
         - 推論(Transformer)は [MASK] 文を集約してバッチ推論
         """
         if len(texts) == 0:
@@ -348,32 +348,32 @@ class ReadingEstimator:
         # マッピング: masked_text index -> (text_index, token_index, target_midasi, fallback_yomi)
         masked_map: List[Tuple[int, int, str, str]] = []
 
-        # 出力をまずはJumanの yomi で埋める（必要箇所だけ推定で置換）
+        # 出力をまずはJumanppの yomi で埋める（必要箇所だけ推定で置換）
         outputs: List[List[Tuple[str, str]]] = []
 
         for ti, text in enumerate(texts):
-            result = self.jumanpp.analysis(text)
-            mrphs = result.mrph_list()
+            result = self.jumanpp.apply_to_sentence(text)
+            mrphs = result.morphemes
 
             # 初期出力（まずは元のyomi）
-            pairs: List[Tuple[str, str]] = [(m.midasi, m.yomi) for m in mrphs]
+            pairs: List[Tuple[str, str]] = [(m.surf, m.reading) for m in mrphs]
             outputs.append(pairs)
 
             # midasi の出現回数（トークン列で数える）
             counts: Dict[str, int] = {}
             for m in mrphs:
-                counts[m.midasi] = counts.get(m.midasi, 0) + 1
+                counts[m.surf] = counts.get(m.surf, 0) + 1
 
             # 推定する対象だけ masked_text を作成
             for idx, target in enumerate(mrphs):
-                midasi = target.midasi
+                midasi = target.surf
                 if midasi in self.references and counts.get(midasi, 0) == 1:
                     masked_text = " ".join(
                         [self.tokenizer.mask_token if j ==
-                            idx else mrphs[j].midasi for j in range(len(mrphs))]
+                            idx else mrphs[j].surf for j in range(len(mrphs))]
                     ).strip()
                     all_masked_texts.append(masked_text)
-                    masked_map.append((ti, idx, midasi, target.yomi))
+                    masked_map.append((ti, idx, midasi, target.reading))
 
         if len(all_masked_texts) == 0:
             return outputs
@@ -407,12 +407,12 @@ class ReadingEstimator:
         if word not in self.references:
             return current_reading
 
-        left_result = self.jumanpp.analysis(left_context)
-        right_result = self.jumanpp.analysis(right_context)
+        left_result = self.jumanpp.apply_to_sentence(left_context)
+        right_result = self.jumanpp.apply_to_sentence(right_context)
         left_spaced = " ".join(
-            [item.midasi for item in left_result.mrph_list()])
+            [item.surf for item in left_result.morphemes])
         right_spaced = " ".join(
-            [item.midasi for item in right_result.mrph_list()])
+            [item.surf for item in right_result.morphemes])
 
         masked_text = f"{left_spaced} {self.tokenizer.mask_token} {right_spaced}".strip(
         )

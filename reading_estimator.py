@@ -1,6 +1,6 @@
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 import torch
-from pyknp import Juman  # JUMAN tokenizer を使用
+from rhoknp import Jumanpp  # JUMAN tokenizer を使用
 import json
 import numpy as np
 from copy import deepcopy
@@ -18,7 +18,7 @@ class ReadingEstimator:
              - most_similar: コサイン類似度が最も高い読みを予測
              - average: すべての参照データのコサイン類似度の平均が最も高い読みを予測
         """
-        self.jumanpp = Juman()  # Jumanを初期化
+        self.jumanpp = Jumanpp()  # Jumanを初期化
         self.model_name = model_name
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForMaskedLM.from_pretrained(model_name)
@@ -95,21 +95,21 @@ class ReadingEstimator:
 
     def _split_reference(self, text):
         # referenceのテキストを形態素解析し、半角スペースで分割する
-        result = self.jumanpp.analysis(text)
-        text = " ".join([mrph.midasi for mrph in result.mrph_list()])
+        result = self.jumanpp.apply_to_sentence(text)
+        text = " ".join([mrph.surf for mrph in result.morphemes])
         text = text.replace("[ MASK ]", self.tokenizer.mask_token)
         return text
 
     def get_reading_prediction(self, text):
         # Jumanでテキストを形態素解析し、分割する
-        result = self.jumanpp.analysis(text)
+        result = self.jumanpp.apply_to_sentence(text)
         predicted_readings = []
 
-        for mrph in result.mrph_list():
+        for mrph in result.morphemes:
             # FIXME: 一文に複数回出現する場合に対応
-            if mrph.midasi in self.references and text.count(mrph.midasi) == 1:  # 原形が対象の読み分け単語に含まれる場合
+            if mrph.surf in self.references and text.count(mrph.surf) == 1:  # 原形が対象の読み分け単語に含まれる場合
                 masked_text = " ".join([
-                    self.tokenizer.mask_token if mrph.midasi == item.midasi else item.midasi for item in result.mrph_list()
+                    self.tokenizer.mask_token if mrph.surf == item.surf else item.surf for item in result.morphemes
                 ])
                 inputs = self.tokenizer(masked_text, return_tensors="pt")
                 outputs = self.model(**inputs)
@@ -118,11 +118,11 @@ class ReadingEstimator:
                 )[0]
                 get_reading = self._get_most_similar_reading if self.evaluation_type == "most_similar" else self._get_average_similar_reading
                 predicted_reading = get_reading(
-                    mrph.midasi, outputs.logits[0, mask_token_index].detach().numpy()
+                    mrph.surf, outputs.logits[0, mask_token_index].detach().numpy()
                 )
-                predicted_readings.append((mrph.midasi, predicted_reading))
+                predicted_readings.append((mrph.surf, predicted_reading))
             else:
-                predicted_readings.append((mrph.midasi, mrph.yomi))
+                predicted_readings.append((mrph.surf, mrph.reading))
         return predicted_readings
 
     def get_optimized_reading(self, word, left_context, right_context, current_reading):
@@ -145,10 +145,10 @@ class ReadingEstimator:
 
         # 単語が参照データに存在する場合、コンテキストを用いて最適な読みを決定
         # 左文脈と右文脈を結合して[MASK]トークンを挿入
-        left_result = self.jumanpp.analysis(left_context)
-        right_result = self.jumanpp.analysis(right_context)
-        left_result = " ".join([item.midasi for item in left_result.mrph_list()])
-        right_result = " ".join([item.midasi for item in right_result.mrph_list()])
+        left_result = self.jumanpp.apply_to_sentence(left_context)
+        right_result = self.jumanpp.apply_to_sentence(right_context)
+        left_result = " ".join([item.surf for item in left_result.morphemes])
+        right_result = " ".join([item.surf for item in right_result.morphemes])
 
         masked_text = f"{left_result} {self.tokenizer.mask_token} {right_result}"
         inputs = self.tokenizer(masked_text, return_tensors="pt")

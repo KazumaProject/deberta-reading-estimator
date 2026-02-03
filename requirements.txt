@@ -1,3 +1,0 @@
-pyknp
-torch
-transformers
