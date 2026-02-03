@@ -2,3 +2,6 @@ __pycache__/
 .env
 .DS_Store
 *.pkl
+jumanpp*
+out.jsonl
+inputs.txt
