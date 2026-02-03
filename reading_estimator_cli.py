@@ -22,6 +22,7 @@ from transformers import AutoTokenizer, AutoModelForMaskedLM, AutoModel
 def _get_tqdm():
     try:
         from tqdm import tqdm  # type: ignore
+
         return tqdm
     except Exception:
         return None
@@ -30,7 +31,7 @@ def _get_tqdm():
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     a = a.reshape(-1)
     b = b.reshape(-1)
-    denom = (np.linalg.norm(a) * np.linalg.norm(b))
+    denom = np.linalg.norm(a) * np.linalg.norm(b)
     if denom == 0:
         return 0.0
     return float(np.dot(a, b) / denom)
@@ -76,8 +77,7 @@ class ReadingEstimator:
             show_progress: 進捗表示するか
         """
         if evaluation_type not in ("most_similar", "average"):
-            raise ValueError(
-                "evaluation_type must be 'most_similar' or 'average'")
+            raise ValueError("evaluation_type must be 'most_similar' or 'average'")
         if representation not in ("hidden", "logits"):
             raise ValueError("representation must be 'hidden' or 'logits'")
         if batch_size <= 0:
@@ -114,7 +114,8 @@ class ReadingEstimator:
         for key, values in self.references.items():
             for reading, texts in values.items():
                 self.references[key][reading] = [
-                    self._split_reference(text) for text in texts]
+                    self._split_reference(text) for text in texts
+                ]
 
         # 参照ベクトルを前計算
         self.reference_vectors = self._calculate_reference_vectors()
@@ -124,7 +125,8 @@ class ReadingEstimator:
         for key, values in self.references.items():
             for reading, texts in values.items():
                 self.references[key][reading] = [
-                    self._split_reference(text) for text in texts]
+                    self._split_reference(text) for text in texts
+                ]
         self.reference_vectors = self._calculate_reference_vectors()
 
     def _split_reference(self, text: str) -> str:
@@ -138,7 +140,9 @@ class ReadingEstimator:
         spaced = spaced.replace("[mask]", self.tokenizer.mask_token)
         return spaced
 
-    def _calculate_reference_vectors(self) -> Dict[str, Dict[str, List[Tuple[np.ndarray, str]]]]:
+    def _calculate_reference_vectors(
+        self,
+    ) -> Dict[str, Dict[str, List[Tuple[np.ndarray, str]]]]:
         """
         reference_vectors[kanji][reading] = [(vec, text), ...]
 
@@ -151,8 +155,7 @@ class ReadingEstimator:
         it_desc = f"Compiling references ({self.representation}, bs={self.batch_size}, device={self.device})"
         use_tqdm = (tqdm is not None) and self.show_progress
 
-        reference_vectors: Dict[str,
-                                Dict[str, List[Tuple[np.ndarray, str]]]] = {}
+        reference_vectors: Dict[str, Dict[str, List[Tuple[np.ndarray, str]]]] = {}
 
         # すべての例文をフラットにして、バッチ推論してから元の構造に戻す
         flat_items: List[Tuple[str, str, str]] = []  # (kanji, reading, text)
@@ -182,7 +185,7 @@ class ReadingEstimator:
 
         # バッチ推論
         for i in range(0, len(flat_items), self.batch_size):
-            batch = flat_items[i: i + self.batch_size]
+            batch = flat_items[i : i + self.batch_size]
             texts = [t for _, _, t in batch]
 
             inputs = self.tokenizer(
@@ -218,7 +221,8 @@ class ReadingEstimator:
                 t = first_mask_pos[bi]
                 if t is None:
                     raise ValueError(
-                        f"Reference text has no [MASK] after conversion: {text}")
+                        f"Reference text has no [MASK] after conversion: {text}"
+                    )
 
                 if self.representation == "hidden":
                     assert hs is not None
@@ -257,7 +261,9 @@ class ReadingEstimator:
 
         return predicted_reading
 
-    def _get_average_similar_reading(self, kanji: str, vec: np.ndarray) -> Optional[str]:
+    def _get_average_similar_reading(
+        self, kanji: str, vec: np.ndarray
+    ) -> Optional[str]:
         max_similarity = -1e9
         predicted_reading: Optional[str] = None
 
@@ -315,7 +321,8 @@ class ReadingEstimator:
             t = first_mask_pos[bi]
             if t is None:
                 raise ValueError(
-                    "No [MASK] token found in a masked_text (after tokenization).")
+                    "No [MASK] token found in a masked_text (after tokenization)."
+                )
             if self.representation == "hidden":
                 assert hs is not None
                 vec = hs[bi, t].detach().to("cpu").numpy()
@@ -369,8 +376,10 @@ class ReadingEstimator:
                 midasi = target.surf
                 if midasi in self.references and counts.get(midasi, 0) == 1:
                     masked_text = " ".join(
-                        [self.tokenizer.mask_token if j ==
-                            idx else mrphs[j].surf for j in range(len(mrphs))]
+                        [
+                            self.tokenizer.mask_token if j == idx else mrphs[j].surf
+                            for j in range(len(mrphs))
+                        ]
                     ).strip()
                     all_masked_texts.append(masked_text)
                     masked_map.append((ti, idx, midasi, target.reading))
@@ -387,7 +396,7 @@ class ReadingEstimator:
         # masked_texts を self.batch_size で刻んで推論（GPU/CPUで高速）
         inferred_vecs: List[np.ndarray] = []
         for i in range(0, len(all_masked_texts), self.batch_size):
-            chunk = all_masked_texts[i: i + self.batch_size]
+            chunk = all_masked_texts[i : i + self.batch_size]
             inferred_vecs.extend(self._infer_mask_vectors(chunk))
 
         # 推定結果を outputs に反映
@@ -396,8 +405,7 @@ class ReadingEstimator:
             pred = chooser(midasi, vec)
             # token_idx の reading を置換
             word, _old = outputs[ti][token_idx]
-            outputs[ti][token_idx] = (
-                word, pred if pred is not None else fallback_yomi)
+            outputs[ti][token_idx] = (word, pred if pred is not None else fallback_yomi)
 
         return outputs
 
@@ -409,12 +417,11 @@ class ReadingEstimator:
 
         left_result = self.jumanpp.apply_to_sentence(left_context)
         right_result = self.jumanpp.apply_to_sentence(right_context)
-        left_spaced = " ".join(
-            [item.surf for item in left_result.morphemes])
-        right_spaced = " ".join(
-            [item.surf for item in right_result.morphemes])
+        left_spaced = " ".join([item.surf for item in left_result.morphemes])
+        right_spaced = " ".join([item.surf for item in right_result.morphemes])
 
-        masked_text = f"{left_spaced} {self.tokenizer.mask_token} {right_spaced}".strip(
+        masked_text = (
+            f"{left_spaced} {self.tokenizer.mask_token} {right_spaced}".strip()
         )
         vec = self._infer_mask_vector(masked_text)
 
@@ -468,33 +475,50 @@ class ReadingEstimator:
 # -------------------------
 def _build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="ReadingEstimator CLI (multi-input + batched inference)")
+        description="ReadingEstimator CLI (multi-input + batched inference)"
+    )
 
     # 共通
-    p.add_argument("--device", default="cpu",
-                   choices=["cpu", "cuda"], help="cpu/cuda")
-    p.add_argument("--batch-size", type=int, default=16,
-                   help="batch size for compiling & inference")
-    p.add_argument("--no-progress", action="store_true",
-                   help="disable progress output")
+    p.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="cpu/cuda")
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=16,
+        help="batch size for compiling & inference",
+    )
+    p.add_argument("--no-progress", action="store_true", help="disable progress output")
 
     # モデル・方式
     p.add_argument(
-        "--model", default="ku-nlp/deberta-v2-base-japanese", help="HF model name")
-    p.add_argument("--eval", default="most_similar",
-                   choices=["most_similar", "average"], help="evaluation type")
-    p.add_argument("--repr", default="hidden",
-                   choices=["hidden", "logits"], help="representation: hidden / logits")
+        "--model", default="ku-nlp/deberta-v2-base-japanese", help="HF model name"
+    )
+    p.add_argument(
+        "--eval",
+        default="most_similar",
+        choices=["most_similar", "average"],
+        help="evaluation type",
+    )
+    p.add_argument(
+        "--repr",
+        default="hidden",
+        choices=["hidden", "logits"],
+        help="representation: hidden / logits",
+    )
 
     # 予測（compiled を使う or references から作る）
-    p.add_argument("--compiled", default=None,
-                   help="compiled pkl path to load")
-    p.add_argument("--references", default=None,
-                   help="references.json path (used when not using --compiled)")
+    p.add_argument("--compiled", default=None, help="compiled pkl path to load")
+    p.add_argument(
+        "--references",
+        default=None,
+        help="references.json path (used when not using --compiled)",
+    )
 
     # コンパイル作成モード（これがあると “pkl生成だけ” で終わる）
-    p.add_argument("--build-compiled", default=None,
-                   help="output path to save compiled pkl, then exit")
+    p.add_argument(
+        "--build-compiled",
+        default=None,
+        help="output path to save compiled pkl, then exit",
+    )
 
     # 入力（複数）
     p.add_argument(
@@ -511,10 +535,16 @@ def _build_argparser() -> argparse.ArgumentParser:
         default=None,
         help="read input texts from file (utf-8). one line = one input. can be specified multiple times",
     )
-    p.add_argument("--stdin", action="store_true",
-                   help="read additional input texts from stdin (one line = one input)")
-    p.add_argument("--interactive", action="store_true",
-                   help="interactive REPL mode (single-line loop)")
+    p.add_argument(
+        "--stdin",
+        action="store_true",
+        help="read additional input texts from stdin (one line = one input)",
+    )
+    p.add_argument(
+        "--interactive",
+        action="store_true",
+        help="interactive REPL mode (single-line loop)",
+    )
 
     # 出力
     p.add_argument(
@@ -523,18 +553,22 @@ def _build_argparser() -> argparse.ArgumentParser:
         choices=["reading", "pairs", "json", "jsonl"],
         help="output format: reading/pairs/json/jsonl",
     )
-    p.add_argument("--out", default=None,
-                   help="output file path (default: stdout)")
+    p.add_argument("--out", default=None, help="output file path (default: stdout)")
 
     # timing
-    p.add_argument("--time", action="store_true",
-                   help="print inference time (seconds) to stderr")
-    p.add_argument("--load-time", action="store_true",
-                   help="print model/loading time (seconds) to stderr")
+    p.add_argument(
+        "--time", action="store_true", help="print inference time (seconds) to stderr"
+    )
+    p.add_argument(
+        "--load-time",
+        action="store_true",
+        help="print model/loading time (seconds) to stderr",
+    )
 
     # optimized reading
-    p.add_argument("--opt-word", default=None,
-                   help="word for get_optimized_reading (e.g. 水)")
+    p.add_argument(
+        "--opt-word", default=None, help="word for get_optimized_reading (e.g. 水)"
+    )
     p.add_argument("--opt-left", default="", help="left context")
     p.add_argument("--opt-right", default="", help="right context")
     p.add_argument("--opt-current", default="", help="current reading")
@@ -608,7 +642,8 @@ def main() -> None:
     if args.build_compiled is not None:
         if not args.references:
             raise SystemExit(
-                "ERROR: --build-compiled requires --references references.json")
+                "ERROR: --build-compiled requires --references references.json"
+            )
 
         refs = _load_references(args.references)
 
@@ -642,7 +677,8 @@ def main() -> None:
     else:
         if not args.references:
             raise SystemExit(
-                "ERROR: Provide --compiled predictor.pkl OR --references references.json")
+                "ERROR: Provide --compiled predictor.pkl OR --references references.json"
+            )
         refs = _load_references(args.references)
         predictor = ReadingEstimator(
             model_name=args.model,
@@ -698,8 +734,10 @@ def main() -> None:
                 _write_output(args.out, out + "\n")
             else:  # jsonl
                 out = json.dumps(
-                    {"input": line, "tokens": [
-                        {"word": w, "reading": y} for w, y in predicted]},
+                    {
+                        "input": line,
+                        "tokens": [{"word": w, "reading": y} for w, y in predicted],
+                    },
                     ensure_ascii=False,
                 )
                 _write_output(args.out, out + "\n")
@@ -713,7 +751,8 @@ def main() -> None:
 
     if len(inputs) == 0:
         raise SystemExit(
-            "ERROR: No input. Provide --text/--file/--stdin or use --interactive.")
+            "ERROR: No input. Provide --text/--file/--stdin or use --interactive."
+        )
 
     t0 = time.perf_counter()
     batch_predicted = predictor.get_reading_predictions(inputs)
@@ -740,8 +779,10 @@ def main() -> None:
         for inp, pairs in zip(inputs, batch_predicted):
             out_lines.append(
                 json.dumps(
-                    {"input": inp, "tokens": [
-                        {"word": w, "reading": y} for w, y in pairs]},
+                    {
+                        "input": inp,
+                        "tokens": [{"word": w, "reading": y} for w, y in pairs],
+                    },
                     ensure_ascii=False,
                 )
             )
@@ -749,7 +790,9 @@ def main() -> None:
 
     if args.time:
         print(
-            f"[time] infer_total_sec={elapsed:.6f} (n_inputs={len(inputs)})", file=sys.stderr)
+            f"[time] infer_total_sec={elapsed:.6f} (n_inputs={len(inputs)})",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":

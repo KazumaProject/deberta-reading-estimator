@@ -12,14 +12,18 @@ def save_references(references, output_reference_file):
     with open(output_reference_file, "w") as f:
         json.dump(references, f, ensure_ascii=False, indent=4)
 
+
 def main(args):
     assert len(args.source_file) > 0, "source_file must be specified"
     references = json.load(open(args.reference_file, "r"))
     if args.target_word not in references:
         references[args.target_word] = {}
-    
+
     target_references = references[args.target_word]
-    estimator = ReadingEstimator("ku-nlp/deberta-v2-base-japanese", {args.target_word: references[args.target_word]})
+    estimator = ReadingEstimator(
+        "ku-nlp/deberta-v2-base-japanese",
+        {args.target_word: references[args.target_word]},
+    )
 
     source_texts = []
     for source_file in args.source_file:
@@ -48,9 +52,18 @@ def main(args):
                 if None in readings:
                     print("Invalid input", text)
                     continue
-                description = "".join([midasi if midasi != args.target_word else f"{midasi}({yomi})" for midasi, yomi in predicted_readings])
+                description = "".join(
+                    [
+                        midasi if midasi != args.target_word else f"{midasi}({yomi})"
+                        for midasi, yomi in predicted_readings
+                    ]
+                )
                 masked_text = text.replace(args.target_word, "[MASK]")
-                selected_reading = [yomi for midasi, yomi in predicted_readings if midasi == args.target_word][0]
+                selected_reading = [
+                    yomi
+                    for midasi, yomi in predicted_readings
+                    if midasi == args.target_word
+                ][0]
                 if masked_text in target_references[selected_reading]:
                     # すでにリファレンスに含まれている場合はスキップ
                     continue
@@ -68,18 +81,18 @@ def main(args):
                     candidates = list(enumerate(target_references))
                     for j, reading in candidates:
                         print(j, reading)
-                    print(j+1, "Other")
+                    print(j + 1, "Other")
                     selected_index = None
                     while selected_index is None:
                         try:
                             selected_index = int(input())
-                            if selected_index not in range(len(candidates)+1):
+                            if selected_index not in range(len(candidates) + 1):
                                 selected_index = None
                                 print("Please input a valid index")
                         except ValueError:
                             print("Please input a valid index")
                             continue
-                    if selected_index == j+1:
+                    if selected_index == j + 1:
                         print("Please input the correct reading")
                         correct_reading = input()
                         target_references[correct_reading] = [masked_text]
@@ -114,12 +127,8 @@ def main(args):
         save_references(references, args.output_reference_file)
         print("Saved")
 
-
     print("All lines are annotated")
     save_references(references, args.output_reference_file)
-
-                
-                
 
 
 if __name__ == "__main__":
@@ -157,7 +166,7 @@ if __name__ == "__main__":
         "--text_filter",
         type=str,
         default=None,
-        help="アノテーション対象のテキストのフィルター"
+        help="アノテーション対象のテキストのフィルター",
     )
     args = parser.parse_args()
 
@@ -168,6 +177,7 @@ if __name__ == "__main__":
     answer = input()
     if answer == "y":
         import shutil
+
         shutil.move("updated_references.json", "references.json")
         print("Moved")
     else:

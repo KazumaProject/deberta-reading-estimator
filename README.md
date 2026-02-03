@@ -6,16 +6,9 @@
 
 ## 環境構築
 
-（オプション）仮想環境を立てる
+uvで環境構築できます。
 ```bash
-python3 -m venv .env
-source .env/bin/activate
-```
-
-必要なライブラリのインストール
-
-```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 加えて、macOSで以下のようにJUMAN++の環境構築を実施した。
@@ -32,6 +25,15 @@ cd jumanpp-1.02
 make CXXFLAGS="-I/opt/homebrew/Cellar/boost/1.86.0/include"
 sudo make install
 ```
+
+## formatter/linter
+
+以下を実行することでformatter/linterを適用できます。
+```bash
+uv run ruff format
+uv run ruff check --fix
+```
+
 
 ## License
 

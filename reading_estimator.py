@@ -107,16 +107,27 @@ class ReadingEstimator:
 
         for mrph in result.morphemes:
             # FIXME: 一文に複数回出現する場合に対応
-            if mrph.surf in self.references and text.count(mrph.surf) == 1:  # 原形が対象の読み分け単語に含まれる場合
-                masked_text = " ".join([
-                    self.tokenizer.mask_token if mrph.surf == item.surf else item.surf for item in result.morphemes
-                ])
+            if (
+                mrph.surf in self.references and text.count(mrph.surf) == 1
+            ):  # 原形が対象の読み分け単語に含まれる場合
+                masked_text = " ".join(
+                    [
+                        self.tokenizer.mask_token
+                        if mrph.surf == item.surf
+                        else item.surf
+                        for item in result.morphemes
+                    ]
+                )
                 inputs = self.tokenizer(masked_text, return_tensors="pt")
                 outputs = self.model(**inputs)
                 mask_token_index = torch.where(
                     inputs["input_ids"][0] == self.tokenizer.mask_token_id
                 )[0]
-                get_reading = self._get_most_similar_reading if self.evaluation_type == "most_similar" else self._get_average_similar_reading
+                get_reading = (
+                    self._get_most_similar_reading
+                    if self.evaluation_type == "most_similar"
+                    else self._get_average_similar_reading
+                )
                 predicted_reading = get_reading(
                     mrph.surf, outputs.logits[0, mask_token_index].detach().numpy()
                 )
@@ -175,7 +186,7 @@ class ReadingEstimator:
             "reference_logits": self.reference_logits,
             "references": self.references,
             "evaluation_type": self.evaluation_type,
-            "model_name": self.model_name
+            "model_name": self.model_name,
         }
         with open(path, "wb") as f:
             pickle.dump(data_to_save, f)
@@ -191,11 +202,14 @@ class ReadingEstimator:
             raise FileNotFoundError(f"No compiled data file found at {path}")
         with open(path, "rb") as f:
             loaded_data = pickle.load(f)
-        self = ReadingEstimator(loaded_data["model_name"], dict(), loaded_data["evaluation_type"])
+        self = ReadingEstimator(
+            loaded_data["model_name"], dict(), loaded_data["evaluation_type"]
+        )
         self.reference_logits = loaded_data["reference_logits"]
         self.references = loaded_data["references"]
         print(f"Compiled data loaded from {path}")
         return self
+
 
 if __name__ == "__main__":
     # 使用例
