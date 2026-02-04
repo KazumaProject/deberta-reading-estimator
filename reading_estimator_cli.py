@@ -174,9 +174,7 @@ class ReadingEstimator:
         """
         tqdm = _get_tqdm()
 
-        it_desc = (
-            f"Compiling references ({self.representation}, bs={self.batch_size}, device={self.device})"
-        )
+        it_desc = f"Compiling references ({self.representation}, bs={self.batch_size}, device={self.device})"
         use_tqdm = (tqdm is not None) and self.show_progress
 
         reference_vectors: Dict[str, Dict[str, List[Tuple[np.ndarray, str]]]] = {}
@@ -439,7 +437,9 @@ class ReadingEstimator:
         left_spaced = " ".join([item.surf for item in left_result.morphemes])
         right_spaced = " ".join([item.surf for item in right_result.morphemes])
 
-        masked_text = f"{left_spaced} {self.tokenizer.mask_token} {right_spaced}".strip()
+        masked_text = (
+            f"{left_spaced} {self.tokenizer.mask_token} {right_spaced}".strip()
+        )
         vec = self._infer_mask_vector(masked_text)
 
         predicted = self._get_most_similar_reading(word, vec)

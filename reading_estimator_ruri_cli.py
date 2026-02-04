@@ -127,11 +127,11 @@ class ReadingEstimator:
     # よくある mask 表記ゆれを全部吸収（Sudachi が <mask> を < mask > にしがちなので重要）
     _MASK_VARIANT_RE = re.compile(
         r"(?i)("
-        r"\[\s*mask\s*\]"          # [MASK], [ mask ]
-        r"|<\s*mask\s*>"           # <mask>, < mask >
-        r"|＜\s*mask\s*＞"          # fullwidth brackets
-        r"|\(\s*mask\s*\)"         # (mask)
-        r"|\{\s*mask\s*\}"         # {mask}
+        r"\[\s*mask\s*\]"  # [MASK], [ mask ]
+        r"|<\s*mask\s*>"  # <mask>, < mask >
+        r"|＜\s*mask\s*＞"  # fullwidth brackets
+        r"|\(\s*mask\s*\)"  # (mask)
+        r"|\{\s*mask\s*\}"  # {mask}
         r")"
     )
 
@@ -245,7 +245,9 @@ class ReadingEstimator:
     def _prepare_references_inplace(self) -> None:
         for key, values in self.references.items():
             for reading, texts in values.items():
-                self.references[key][reading] = [self._split_reference(t) for t in texts]
+                self.references[key][reading] = [
+                    self._split_reference(t) for t in texts
+                ]
 
     def update_references(self, references: Dict[str, Dict[str, List[str]]]) -> None:
         self.references = deepcopy(references)
@@ -313,7 +315,9 @@ class ReadingEstimator:
                 else:
                     lg = getattr(outputs, "logits", None)  # (B, T, V)
                     if lg is None:
-                        raise ValueError("Model outputs have no logits; use --repr hidden")
+                        raise ValueError(
+                            "Model outputs have no logits; use --repr hidden"
+                        )
                     hs = None
 
             input_ids = inputs["input_ids"]  # (B, T)
@@ -465,7 +469,9 @@ class ReadingEstimator:
 
         outputs: List[List[Tuple[str, str]]] = []
         all_masked_texts: List[str] = []
-        masked_map: List[Tuple[int, int, str, str]] = []  # (ti, token_idx, surf, fallback_yomi)
+        masked_map: List[
+            Tuple[int, int, str, str]
+        ] = []  # (ti, token_idx, surf, fallback_yomi)
 
         for ti, text in enumerate(texts):
             mrphs = self.segmenter.tokenize(text)
@@ -535,7 +541,9 @@ class ReadingEstimator:
         left_spaced = " ".join([m.surf for m in left_m]).strip()
         right_spaced = " ".join([m.surf for m in right_m]).strip()
 
-        masked_text = f"{left_spaced} {self.tokenizer.mask_token} {right_spaced}".strip()
+        masked_text = (
+            f"{left_spaced} {self.tokenizer.mask_token} {right_spaced}".strip()
+        )
         masked_text = self._normalize_mask_in_text(masked_text)
 
         vec = self._infer_mask_vector(masked_text)
@@ -599,7 +607,10 @@ def _build_argparser() -> argparse.ArgumentParser:
     # common
     p.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="cpu/cuda")
     p.add_argument(
-        "--batch-size", type=int, default=16, help="batch size for compiling & inference"
+        "--batch-size",
+        type=int,
+        default=16,
+        help="batch size for compiling & inference",
     )
     p.add_argument("--no-progress", action="store_true", help="disable progress output")
 
@@ -685,7 +696,9 @@ def _build_argparser() -> argparse.ArgumentParser:
     )
 
     # optimized reading
-    p.add_argument("--opt-word", default=None, help="word for get_optimized_reading (e.g. 水)")
+    p.add_argument(
+        "--opt-word", default=None, help="word for get_optimized_reading (e.g. 水)"
+    )
     p.add_argument("--opt-left", default="", help="left context")
     p.add_argument("--opt-right", default="", help="right context")
     p.add_argument("--opt-current", default="", help="current reading")
@@ -753,7 +766,9 @@ def main() -> None:
     # 1) build-compiled mode
     if args.build_compiled is not None:
         if not args.references:
-            raise SystemExit("ERROR: --build-compiled requires --references references.json")
+            raise SystemExit(
+                "ERROR: --build-compiled requires --references references.json"
+            )
 
         refs = _load_references(args.references)
 
@@ -787,7 +802,9 @@ def main() -> None:
         )
     else:
         if not args.references:
-            raise SystemExit("ERROR: Provide --compiled predictor.pkl OR --references references.json")
+            raise SystemExit(
+                "ERROR: Provide --compiled predictor.pkl OR --references references.json"
+            )
         refs = _load_references(args.references)
         predictor = ReadingEstimator(
             model_name=args.model,
@@ -860,7 +877,9 @@ def main() -> None:
     # 5) batch inputs
     inputs = _collect_inputs(args)
     if not inputs:
-        raise SystemExit("ERROR: No input. Provide --text/--file/--stdin or use --interactive.")
+        raise SystemExit(
+            "ERROR: No input. Provide --text/--file/--stdin or use --interactive."
+        )
 
     t0 = time.perf_counter()
     batch_predicted = predictor.get_reading_predictions(inputs)
@@ -872,21 +891,29 @@ def main() -> None:
     elif args.format == "json":
         obj: List[Any] = []
         for inp, pairs in zip(inputs, batch_predicted):
-            obj.append({"input": inp, "tokens": [{"word": w, "reading": y} for w, y in pairs]})
+            obj.append(
+                {"input": inp, "tokens": [{"word": w, "reading": y} for w, y in pairs]}
+            )
         _write_output(args.out, json.dumps(obj, ensure_ascii=False) + "\n")
     else:  # jsonl
         out_lines: List[str] = []
         for inp, pairs in zip(inputs, batch_predicted):
             out_lines.append(
                 json.dumps(
-                    {"input": inp, "tokens": [{"word": w, "reading": y} for w, y in pairs]},
+                    {
+                        "input": inp,
+                        "tokens": [{"word": w, "reading": y} for w, y in pairs],
+                    },
                     ensure_ascii=False,
                 )
             )
         _write_output(args.out, "\n".join(out_lines) + "\n")
 
     if args.time:
-        print(f"[time] infer_total_sec={elapsed:.6f} (n_inputs={len(inputs)})", file=sys.stderr)
+        print(
+            f"[time] infer_total_sec={elapsed:.6f} (n_inputs={len(inputs)})",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":
