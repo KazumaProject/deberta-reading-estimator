@@ -8,12 +8,12 @@ import sys
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Literal, Any
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import torch
 from rhoknp import Jumanpp
-from transformers import AutoTokenizer, AutoModelForMaskedLM, AutoModel
+from transformers import AutoModel, AutoModelForMaskedLM, AutoTokenizer
 
 
 # -------------------------
@@ -63,6 +63,10 @@ class ReadingEstimator:
         representation: Representation = "hidden",
         batch_size: int = 16,
         show_progress: bool = True,
+        jumanpp_timeout: int = 120,
+        jumanpp_executable: str = "jumanpp",
+        jumanpp_options: Optional[List[str]] = None,
+        jumanpp_skip_sanity_check: bool = True,
     ):
         """
         Args:
@@ -75,6 +79,10 @@ class ReadingEstimator:
                 - "logits": 語彙logitsベクトルで比較（pkl重い＆遅いが元の挙動に近い）
             batch_size: 参照計算時・推論時のバッチサイズ
             show_progress: 進捗表示するか
+            jumanpp_timeout: Juman++ に渡す timeout（秒）
+            jumanpp_executable: jumanpp の実行パス
+            jumanpp_options: jumanpp の起動オプション
+            jumanpp_skip_sanity_check: rhoknp の起動時 sanity check をスキップ（10秒timeout回避）
         """
         if evaluation_type not in ("most_similar", "average"):
             raise ValueError("evaluation_type must be 'most_similar' or 'average'")
@@ -82,8 +90,21 @@ class ReadingEstimator:
             raise ValueError("representation must be 'hidden' or 'logits'")
         if batch_size <= 0:
             raise ValueError("batch_size must be >= 1")
+        if jumanpp_timeout <= 0:
+            raise ValueError("jumanpp_timeout must be >= 1")
 
-        self.jumanpp = Jumanpp()
+        self.jumanpp_timeout = int(jumanpp_timeout)
+
+        # NOTE:
+        # rhoknp.Jumanpp は __init__ で start_process() → sanity check として apply() を実行します。
+        # その内部は apply_to_sentence(timeout=10) が既定で、ここで10秒timeoutが起き得ます。
+        # skip_sanity_check=True で回避します。:contentReference[oaicite:1]{index=1}
+        self.jumanpp = Jumanpp(
+            executable=jumanpp_executable,
+            options=jumanpp_options,
+            skip_sanity_check=jumanpp_skip_sanity_check,
+        )
+
         self.model_name = model_name
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -130,7 +151,8 @@ class ReadingEstimator:
         self.reference_vectors = self._calculate_reference_vectors()
 
     def _split_reference(self, text: str) -> str:
-        result = self.jumanpp.apply_to_sentence(text)
+        # timeout を必ず渡す（rhoknp の既定は 10 秒）:contentReference[oaicite:2]{index=2}
+        result = self.jumanpp.apply_to_sentence(text, timeout=self.jumanpp_timeout)
         spaced = " ".join([mrph.surf for mrph in result.morphemes])
 
         # 表記ゆれをまとめて mask に
@@ -152,7 +174,9 @@ class ReadingEstimator:
         """
         tqdm = _get_tqdm()
 
-        it_desc = f"Compiling references ({self.representation}, bs={self.batch_size}, device={self.device})"
+        it_desc = (
+            f"Compiling references ({self.representation}, bs={self.batch_size}, device={self.device})"
+        )
         use_tqdm = (tqdm is not None) and self.show_progress
 
         reference_vectors: Dict[str, Dict[str, List[Tuple[np.ndarray, str]]]] = {}
@@ -349,29 +373,23 @@ class ReadingEstimator:
         if len(texts) == 0:
             return []
 
-        # どのトークン(midasi)が文中に何回出ているかは「mrph列」で数える（text.countより安定）
-        # ここで "推定対象" の masked_text を全部集める
         all_masked_texts: List[str] = []
-        # マッピング: masked_text index -> (text_index, token_index, target_midasi, fallback_yomi)
         masked_map: List[Tuple[int, int, str, str]] = []
 
-        # 出力をまずはJumanppの yomi で埋める（必要箇所だけ推定で置換）
         outputs: List[List[Tuple[str, str]]] = []
 
         for ti, text in enumerate(texts):
-            result = self.jumanpp.apply_to_sentence(text)
+            # timeout を必ず渡す（既定 10 秒回避）:contentReference[oaicite:3]{index=3}
+            result = self.jumanpp.apply_to_sentence(text, timeout=self.jumanpp_timeout)
             mrphs = result.morphemes
 
-            # 初期出力（まずは元のyomi）
             pairs: List[Tuple[str, str]] = [(m.surf, m.reading) for m in mrphs]
             outputs.append(pairs)
 
-            # midasi の出現回数（トークン列で数える）
             counts: Dict[str, int] = {}
             for m in mrphs:
                 counts[m.surf] = counts.get(m.surf, 0) + 1
 
-            # 推定する対象だけ masked_text を作成
             for idx, target in enumerate(mrphs):
                 midasi = target.surf
                 if midasi in self.references and counts.get(midasi, 0) == 1:
@@ -393,17 +411,14 @@ class ReadingEstimator:
             else self._get_average_similar_reading
         )
 
-        # masked_texts を self.batch_size で刻んで推論（GPU/CPUで高速）
         inferred_vecs: List[np.ndarray] = []
         for i in range(0, len(all_masked_texts), self.batch_size):
             chunk = all_masked_texts[i : i + self.batch_size]
             inferred_vecs.extend(self._infer_mask_vectors(chunk))
 
-        # 推定結果を outputs に反映
         for mi, (ti, token_idx, midasi, fallback_yomi) in enumerate(masked_map):
             vec = inferred_vecs[mi]
             pred = chooser(midasi, vec)
-            # token_idx の reading を置換
             word, _old = outputs[ti][token_idx]
             outputs[ti][token_idx] = (word, pred if pred is not None else fallback_yomi)
 
@@ -415,23 +430,22 @@ class ReadingEstimator:
         if word not in self.references:
             return current_reading
 
-        left_result = self.jumanpp.apply_to_sentence(left_context)
-        right_result = self.jumanpp.apply_to_sentence(right_context)
+        left_result = self.jumanpp.apply_to_sentence(
+            left_context, timeout=self.jumanpp_timeout
+        )
+        right_result = self.jumanpp.apply_to_sentence(
+            right_context, timeout=self.jumanpp_timeout
+        )
         left_spaced = " ".join([item.surf for item in left_result.morphemes])
         right_spaced = " ".join([item.surf for item in right_result.morphemes])
 
-        masked_text = (
-            f"{left_spaced} {self.tokenizer.mask_token} {right_spaced}".strip()
-        )
+        masked_text = f"{left_spaced} {self.tokenizer.mask_token} {right_spaced}".strip()
         vec = self._infer_mask_vector(masked_text)
 
         predicted = self._get_most_similar_reading(word, vec)
         return predicted if predicted is not None else current_reading
 
     def save_compiled(self, path: str = "compiled_data.pkl") -> None:
-        """
-        reference_vectors を pickle 保存
-        """
         data = {
             "model_name": self.model_name,
             "evaluation_type": self.evaluation_type,
@@ -449,6 +463,10 @@ class ReadingEstimator:
         device: str = "cpu",
         batch_size: int = 16,
         show_progress: bool = False,
+        jumanpp_timeout: int = 120,
+        jumanpp_executable: str = "jumanpp",
+        jumanpp_options: Optional[List[str]] = None,
+        jumanpp_skip_sanity_check: bool = True,
     ) -> "ReadingEstimator":
         if not os.path.exists(path):
             raise FileNotFoundError(f"No compiled data file found at {path}")
@@ -458,12 +476,16 @@ class ReadingEstimator:
 
         obj = ReadingEstimator(
             model_name=loaded["model_name"],
-            references={},  # 後から復元
+            references={},
             evaluation_type=loaded.get("evaluation_type", "most_similar"),
             device=device,
             representation=loaded.get("representation", "hidden"),
             batch_size=batch_size,
             show_progress=show_progress,
+            jumanpp_timeout=jumanpp_timeout,
+            jumanpp_executable=jumanpp_executable,
+            jumanpp_options=jumanpp_options,
+            jumanpp_skip_sanity_check=jumanpp_skip_sanity_check,
         )
         obj.reference_vectors = loaded["reference_vectors"]
         obj.references = loaded["references"]
@@ -487,6 +509,29 @@ def _build_argparser() -> argparse.ArgumentParser:
         help="batch size for compiling & inference",
     )
     p.add_argument("--no-progress", action="store_true", help="disable progress output")
+
+    # Juman++
+    p.add_argument(
+        "--jumanpp-timeout",
+        type=int,
+        default=120,
+        help="timeout seconds for Juman++ apply_to_sentence (default: 120)",
+    )
+    p.add_argument(
+        "--jumanpp-executable",
+        default="jumanpp",
+        help="jumanpp executable path (default: jumanpp)",
+    )
+    p.add_argument(
+        "--jumanpp-skip-sanity-check",
+        action="store_true",
+        help="skip rhoknp sanity check on Jumanpp startup (recommended)",
+    )
+    p.add_argument(
+        "--jumanpp-options",
+        default="",
+        help='additional jumanpp options as a single string (e.g. "--some-flag value"). empty = none',
+    )
 
     # モデル・方式
     p.add_argument(
@@ -590,7 +635,6 @@ def _read_lines_from_file(path: str) -> List[str]:
 def _collect_inputs(args: argparse.Namespace) -> List[str]:
     texts: List[str] = []
 
-    # --text (複数回)
     if args.text:
         for t in args.text:
             if t is None:
@@ -599,7 +643,6 @@ def _collect_inputs(args: argparse.Namespace) -> List[str]:
             if s:
                 texts.append(s)
 
-    # --file (複数回) : 1行=1入力
     if args.file:
         for fp in args.file:
             if fp is None:
@@ -607,7 +650,6 @@ def _collect_inputs(args: argparse.Namespace) -> List[str]:
             lines = _read_lines_from_file(fp)
             texts.extend(lines)
 
-    # --stdin : 1行=1入力
     if args.stdin:
         piped = sys.stdin.read()
         lines = [line.strip() for line in piped.splitlines()]
@@ -621,7 +663,6 @@ def _format_one(predicted_pairs: List[Tuple[str, str]], fmt: str) -> str:
         return "".join([yomi for _, yomi in predicted_pairs])
     if fmt == "pairs":
         return " ".join([f"{w}:{y}" for w, y in predicted_pairs])
-    # json / jsonl は呼び出し元で組み立てる
     return ""
 
 
@@ -634,9 +675,25 @@ def _write_output(out_path: Optional[str], content: str) -> None:
             sys.stdout.write("\n")
 
 
+def _parse_jumanpp_options(opt_str: str) -> Optional[List[str]]:
+    s = (opt_str or "").strip()
+    if not s:
+        return None
+    # 簡易 split（クォート厳密対応が必要なら shlex.split を使う）
+    import shlex
+
+    return shlex.split(s)
+
+
 def main() -> None:
     args = _build_argparser().parse_args()
     show_progress = not args.no_progress
+
+    jumanpp_options = _parse_jumanpp_options(args.jumanpp_options)
+    # デフォルトで sanity check を避けたいので、フラグが無い場合も True 推奨に寄せる
+    # CLIでは `--jumanpp-skip-sanity-check` を付けたら True、付けないなら True のままにする設計
+    # （安全側：10秒timeout回避）
+    jumanpp_skip_sanity_check = True if args.jumanpp_skip_sanity_check else True
 
     # 1) build-compiled モード（pkl生成のみ）
     if args.build_compiled is not None:
@@ -656,6 +713,10 @@ def main() -> None:
             representation=args.repr,
             batch_size=args.batch_size,
             show_progress=show_progress,
+            jumanpp_timeout=args.jumanpp_timeout,
+            jumanpp_executable=args.jumanpp_executable,
+            jumanpp_options=jumanpp_options,
+            jumanpp_skip_sanity_check=jumanpp_skip_sanity_check,
         )
         load_elapsed = time.perf_counter() - t0_load
 
@@ -673,6 +734,10 @@ def main() -> None:
             device=args.device,
             batch_size=args.batch_size,
             show_progress=False,
+            jumanpp_timeout=args.jumanpp_timeout,
+            jumanpp_executable=args.jumanpp_executable,
+            jumanpp_options=jumanpp_options,
+            jumanpp_skip_sanity_check=jumanpp_skip_sanity_check,
         )
     else:
         if not args.references:
@@ -688,6 +753,10 @@ def main() -> None:
             representation=args.repr,
             batch_size=args.batch_size,
             show_progress=show_progress,
+            jumanpp_timeout=args.jumanpp_timeout,
+            jumanpp_executable=args.jumanpp_executable,
+            jumanpp_options=jumanpp_options,
+            jumanpp_skip_sanity_check=jumanpp_skip_sanity_check,
         )
     load_elapsed = time.perf_counter() - t0_load
 
@@ -710,7 +779,7 @@ def main() -> None:
             print(f"[time] optimized_infer_sec={elapsed:.6f}", file=sys.stderr)
         return
 
-    # interactive（1行ずつだが内部は単発）
+    # interactive
     if args.interactive:
         while True:
             try:
@@ -746,9 +815,8 @@ def main() -> None:
                 print(f"[time] infer_sec={elapsed:.6f}", file=sys.stderr)
         return
 
-    # ---- 複数入力モード（--text/--file/--stdin をまとめて処理） ----
+    # ---- 複数入力モード ----
     inputs = _collect_inputs(args)
-
     if len(inputs) == 0:
         raise SystemExit(
             "ERROR: No input. Provide --text/--file/--stdin or use --interactive."
@@ -758,12 +826,10 @@ def main() -> None:
     batch_predicted = predictor.get_reading_predictions(inputs)
     elapsed = time.perf_counter() - t0
 
-    # 出力組み立て
     if args.format in ("reading", "pairs"):
         lines = [_format_one(pairs, args.format) for pairs in batch_predicted]
         _write_output(args.out, "\n".join(lines) + "\n")
     elif args.format == "json":
-        # 全入力分を1つのJSON配列で返す
         obj: List[Any] = []
         for inp, pairs in zip(inputs, batch_predicted):
             obj.append(
@@ -774,7 +840,6 @@ def main() -> None:
             )
         _write_output(args.out, json.dumps(obj, ensure_ascii=False) + "\n")
     else:  # jsonl
-        # 1行=1JSON（後処理向き）
         out_lines: List[str] = []
         for inp, pairs in zip(inputs, batch_predicted):
             out_lines.append(
