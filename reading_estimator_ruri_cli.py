@@ -11,7 +11,7 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple, Type, cast
+from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple, cast
 
 import numpy as np
 import torch
@@ -23,6 +23,7 @@ from transformers import AutoModel, AutoModelForMaskedLM, AutoTokenizer
 def _get_tqdm():
     try:
         from tqdm import tqdm  # type: ignore
+
         return tqdm
     except Exception:
         return None
@@ -76,7 +77,6 @@ class Segmenter(Protocol):
     """
     Segmenter minimal interface:
       - tokenize(text) -> List[Morph]
-    Any custom segmenter plugin only needs to implement this.
     """
 
     def tokenize(self, text: str) -> List[Morph]:
@@ -87,7 +87,6 @@ class ConfigurableSegmenter(Protocol):
     """
     Optional plugin interface:
       - from_config(config: dict) -> Segmenter
-    If present, the loader can instantiate it with config.
     """
 
     @classmethod
@@ -149,37 +148,80 @@ class SudachiSegmenter:
 class JumanppSegmenter:
     """
     Juman++ segmenter (optional dependency)
+
+    Key point:
+      - rhoknp.Jumanpp has a startup "sanity check" which can time out in some environments.
+      - We default to skip_sanity_check=True to avoid failing at startup.
+      - rcfile is passed via jumanpp CLI options: ["-r", rcfile].
+
     config:
-      - juman_timeout: seconds (float/int). default 10.0
-      - juman_rcfile: optional path to jumanpprc
+      - juman_timeout: seconds for apply_to_sentence()
+      - juman_executable: path/name for jumanpp (default: "jumanpp")
+      - juman_options: list of extra CLI options (JSON array in CLI)
+      - juman_rcfile: optional path (converted into ["-r", path])
+      - juman_skip_sanity_check: bool (default: True)
     """
 
-    def __init__(self, timeout: float = 10.0, rcfile: Optional[str] = None):
+    def __init__(
+        self,
+        timeout: float = 10.0,
+        *,
+        executable: str = "jumanpp",
+        options: Optional[List[str]] = None,
+        rcfile: Optional[str] = None,
+        skip_sanity_check: bool = True,
+    ):
         try:
             from rhoknp import Jumanpp  # type: ignore
         except Exception as e:
             raise RuntimeError(
-                "JumanppSegmenter requires rhoknp + Juman++ runtime. Install rhoknp and ensure jumanpp is available."
+                "JumanppSegmenter requires rhoknp + Juman++ runtime. Install: pip install rhoknp "
+                "and ensure jumanpp is available in PATH."
             ) from e
 
-        # NOTE: rhoknp.Jumanpp constructor supports `rcfile` (depends on version).
-        # We'll pass it if provided.
+        opt: List[str] = []
+        if options:
+            opt.extend([str(x) for x in options])
         if rcfile:
-            self._jumanpp = Jumanpp(rcfile=rcfile)
-        else:
-            self._jumanpp = Jumanpp()
+            # jumanpp supports "-r <rcfile>"
+            opt.extend(["-r", str(rcfile)])
 
+        # NOTE: rhoknp.Jumanpp accepts executable/options/skip_sanity_check
+        self._jumanpp = Jumanpp(
+            executable=str(executable),
+            options=opt if opt else None,
+            skip_sanity_check=bool(skip_sanity_check),
+        )
         self._timeout = float(timeout)
 
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> Segmenter:
-        timeout = config.get("juman_timeout", 10.0)
+        timeout = float(config.get("juman_timeout", 10.0))
+        executable = str(config.get("juman_executable", "jumanpp"))
         rcfile = config.get("juman_rcfile", None)
-        return cls(timeout=float(timeout), rcfile=str(rcfile) if rcfile else None)
+        options = config.get("juman_options", None)
+        skip = config.get("juman_skip_sanity_check", True)
+
+        opt_list: Optional[List[str]] = None
+        if isinstance(options, list):
+            opt_list = [str(x) for x in options]
+        elif options is None:
+            opt_list = None
+        else:
+            raise ValueError("juman_options must be a list (JSON array)")
+
+        return cls(
+            timeout=timeout,
+            executable=executable,
+            options=opt_list,
+            rcfile=str(rcfile) if rcfile else None,
+            skip_sanity_check=bool(skip),
+        )
 
     def tokenize(self, text: str) -> List[Morph]:
-        # rhoknp apply_to_sentence has `timeout` parameter.
+        # apply_to_sentence timeout is separate from startup sanity check
         result = self._jumanpp.apply_to_sentence(text, timeout=self._timeout)
+
         out: List[Morph] = []
         for mrph in result.morphemes:
             surf = getattr(mrph, "surf", "")
@@ -206,7 +248,6 @@ def _load_segmenter_from_plugin(spec: str, config: Dict[str, Any]) -> Segmenter:
     if cls is None:
         raise ValueError(f"Plugin class not found: {spec}")
 
-    # If has from_config, use it; else instantiate with no-arg constructor.
     if hasattr(cls, "from_config") and callable(getattr(cls, "from_config")):
         seg = cast(ConfigurableSegmenter, cls).from_config(config)  # type: ignore[arg-type]
         return cast(Segmenter, seg)
@@ -219,7 +260,6 @@ def _load_segmenter_from_plugin(spec: str, config: Dict[str, Any]) -> Segmenter:
             "Implement from_config(config) or provide a no-arg __init__."
         ) from e
 
-    # minimal check
     if not hasattr(seg, "tokenize") or not callable(getattr(seg, "tokenize")):
         raise ValueError(f"Plugin segmenter {spec} does not implement tokenize(text)")
     return cast(Segmenter, seg)
@@ -235,7 +275,6 @@ def _build_segmenter(name: str, *, config: Dict[str, Any]) -> Tuple[Segmenter, s
     """
     nm = (name or "auto").strip()
 
-    # plugin form
     if ":" in nm:
         seg = _load_segmenter_from_plugin(nm, config)
         return seg, nm, config
@@ -250,11 +289,15 @@ def _build_segmenter(name: str, *, config: Dict[str, Any]) -> Tuple[Segmenter, s
 
     if low == "juman":
         seg = JumanppSegmenter.from_config(config)
-        meta = {
+        meta: Dict[str, Any] = {
             "juman_timeout": config.get("juman_timeout", 10.0),
+            "juman_executable": config.get("juman_executable", "jumanpp"),
+            "juman_skip_sanity_check": config.get("juman_skip_sanity_check", True),
         }
         if config.get("juman_rcfile"):
             meta["juman_rcfile"] = config["juman_rcfile"]
+        if config.get("juman_options"):
+            meta["juman_options"] = config["juman_options"]
         return seg, "juman", meta
 
     if low != "auto":
@@ -268,10 +311,16 @@ def _build_segmenter(name: str, *, config: Dict[str, Any]) -> Tuple[Segmenter, s
         pass
     try:
         seg = JumanppSegmenter.from_config(config)
-        meta = {"juman_timeout": config.get("juman_timeout", 10.0)}
+        meta2: Dict[str, Any] = {
+            "juman_timeout": config.get("juman_timeout", 10.0),
+            "juman_executable": config.get("juman_executable", "jumanpp"),
+            "juman_skip_sanity_check": config.get("juman_skip_sanity_check", True),
+        }
         if config.get("juman_rcfile"):
-            meta["juman_rcfile"] = config["juman_rcfile"]
-        return seg, "juman", meta
+            meta2["juman_rcfile"] = config["juman_rcfile"]
+        if config.get("juman_options"):
+            meta2["juman_options"] = config["juman_options"]
+        return seg, "juman", meta2
     except Exception:
         pass
     return WhitespaceSegmenter(), "whitespace", {}
@@ -320,15 +369,12 @@ class ReadingEstimator:
         if self.tokenizer.mask_token is None or self.tokenizer.mask_token_id is None:
             raise ValueError("Tokenizer has no mask_token/mask_token_id. Requires masked-LM tokenizer.")
 
-        # device
         self.device = "cuda" if (device == "cuda" and torch.cuda.is_available()) else "cpu"
-
         self.representation: Representation = representation
         self.batch_size = batch_size
         self.show_progress = show_progress
         self.evaluation_type = evaluation_type
 
-        # segmenter
         self.segmenter_config = segmenter_config or {}
         if segmenter is not None:
             self.segmenter = segmenter
@@ -337,10 +383,8 @@ class ReadingEstimator:
             seg, seg_name_meta, seg_conf_meta = _build_segmenter(segmenter_name, config=self.segmenter_config)
             self.segmenter = seg
             self.segmenter_name = seg_name_meta
-            # store normalized meta config (helps reproducibility)
             self.segmenter_config = seg_conf_meta
 
-        # mask aliases
         self.mask_aliases = mask_aliases or ["[MASK]", "[ MASK ]", "[mask]", "[ mask ]"]
 
         # model
@@ -352,10 +396,8 @@ class ReadingEstimator:
         self.model.eval()
         self.model.to(self.device)
 
-        # references copy
         self.references = deepcopy(references)
 
-        # compile
         self.reference_vectors: Dict[str, Dict[str, List[Tuple[np.ndarray, str]]]] = {}
         if not _skip_compile:
             self._prepare_references_inplace()
@@ -409,8 +451,8 @@ class ReadingEstimator:
         else:
             pbar = None
             if self.show_progress:
-                print(it_desc)
-                print(f"Total examples: {len(flat_items)}")
+                print(it_desc, file=sys.stderr)
+                print(f"Total examples: {len(flat_items)}", file=sys.stderr)
 
         for key in self.references.keys():
             reference_vectors[key] = {}
@@ -630,7 +672,6 @@ class ReadingEstimator:
             "mask_aliases": self.mask_aliases,
             "references": self.references,
             "reference_vectors": self.reference_vectors,
-            # segmenter metadata
             "segmenter_name": self.segmenter_name,
             "segmenter_config": self.segmenter_config,
         }
@@ -681,7 +722,6 @@ class ReadingEstimator:
 def _build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="ReadingEstimator CLI (segmenter-agnostic + ruri)")
 
-    # common
     p.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="cpu/cuda")
     p.add_argument("--batch-size", type=int, default=16, help="batch size for compiling & inference")
     p.add_argument("--no-progress", action="store_true", help="disable progress output")
@@ -692,7 +732,6 @@ def _build_argparser() -> argparse.ArgumentParser:
         default="auto",
         help="segmenter backend: auto/sudachi/juman/whitespace OR plugin 'module:ClassName'",
     )
-    # Sudachi config
     p.add_argument("--sudachi-mode", default="C", choices=["A", "B", "C"], help="Sudachi split mode (A/B/C)")
 
     # Juman config
@@ -702,10 +741,23 @@ def _build_argparser() -> argparse.ArgumentParser:
         default=10.0,
         help="Juman++ timeout seconds for apply_to_sentence (default: 10.0)",
     )
+    p.add_argument("--juman-rcfile", default=None, help="Optional path to jumanpp rcfile (passed as -r <rcfile>)")
+
+    # NEW: startup options
     p.add_argument(
-        "--juman-rcfile",
+        "--juman-skip-sanity-check",
+        action="store_true",
+        help="Skip rhoknp's Juman++ startup sanity check (recommended if startup times out).",
+    )
+    p.add_argument(
+        "--juman-executable",
+        default="jumanpp",
+        help="Juman++ executable (default: jumanpp). You can set full path like /usr/local/bin/jumanpp.",
+    )
+    p.add_argument(
+        "--juman-options",
         default=None,
-        help="Optional path to jumanpp rcfile (passed to rhoknp.Jumanpp(rcfile=...))",
+        help='Extra options for jumanpp as JSON array. Example: \'["-s","1"]\'',
     )
 
     # Plugin config (generic)
@@ -811,24 +863,37 @@ def _write_output(out_path: Optional[str], content: str) -> None:
 def _merge_segmenter_config(args: argparse.Namespace) -> Dict[str, Any]:
     """
     Base config = CLI dedicated flags + optional JSON config string
-    JSON config overrides nothing by default; we merge and let JSON override if same keys appear.
+    JSON config overrides.
     """
     conf: Dict[str, Any] = {
         "sudachi_mode": args.sudachi_mode,
         "juman_timeout": args.juman_timeout,
+        "juman_executable": args.juman_executable,
+        # IMPORTANT: default True (avoid startup hang); allow override
+        "juman_skip_sanity_check": True if args.juman_skip_sanity_check else True,
     }
+
     if args.juman_rcfile:
         conf["juman_rcfile"] = args.juman_rcfile
+
+    if args.juman_options:
+        try:
+            opt = json.loads(args.juman_options)
+            if not isinstance(opt, list):
+                raise ValueError("juman-options must be a JSON array")
+            conf["juman_options"] = opt
+        except Exception as e:
+            raise SystemExit(f"ERROR: --juman-options is invalid JSON array: {e}")
 
     if args.segmenter_config:
         try:
             extra = json.loads(args.segmenter_config)
             if not isinstance(extra, dict):
                 raise ValueError("segmenter-config must be a JSON object")
-            # JSON overrides
             conf.update(extra)
         except Exception as e:
             raise SystemExit(f"ERROR: --segmenter-config is invalid JSON: {e}")
+
     return conf
 
 
@@ -838,7 +903,7 @@ def main() -> None:
 
     seg_conf = _merge_segmenter_config(args)
 
-    # 1) build-compiled mode
+    # build-compiled mode
     if args.build_compiled is not None:
         if not args.references:
             raise SystemExit("ERROR: --build-compiled requires --references references.json")
@@ -865,7 +930,7 @@ def main() -> None:
             print(f"[time] load_sec={load_elapsed:.6f}", file=sys.stderr)
         return
 
-    # 2) load predictor
+    # load predictor
     t0_load = time.perf_counter()
     if args.compiled:
         predictor = ReadingEstimator.load_compiled(
@@ -873,8 +938,8 @@ def main() -> None:
             device=args.device,
             batch_size=args.batch_size,
             show_progress=False,
-            segmenter_name=args.segmenter,    # allow override
-            segmenter_config=seg_conf,        # allow override
+            segmenter_name=args.segmenter,
+            segmenter_config=seg_conf,
         )
     else:
         if not args.references:
@@ -896,7 +961,7 @@ def main() -> None:
     if args.load_time:
         print(f"[time] load_sec={load_elapsed:.6f}", file=sys.stderr)
 
-    # 3) optimized reading
+    # optimized reading
     if args.opt_word is not None:
         t0 = time.perf_counter()
         res = predictor.get_optimized_reading(
@@ -912,7 +977,7 @@ def main() -> None:
             print(f"[time] optimized_infer_sec={elapsed:.6f}", file=sys.stderr)
         return
 
-    # 4) interactive
+    # interactive
     if args.interactive:
         while True:
             try:
@@ -943,7 +1008,7 @@ def main() -> None:
                 print(f"[time] infer_sec={elapsed:.6f}", file=sys.stderr)
         return
 
-    # 5) batch inputs
+    # batch inputs
     inputs = _collect_inputs(args)
     if not inputs:
         raise SystemExit("ERROR: No input. Provide --text/--file/--stdin or use --interactive.")
