@@ -64,15 +64,36 @@ def main() -> None:
         description="Build source text lines from range3/wiki40b-ja (1 line = 1 sentence)."
     )
     ap.add_argument("--out", required=True, help="output txt path (utf-8)")
-    ap.add_argument("--target_word", required=True, help="keep sentences containing this word exactly once")
-    ap.add_argument("--split", default="train", choices=["train", "validation", "test"], help="dataset split")
+    ap.add_argument(
+        "--target_word",
+        required=True,
+        help="keep sentences containing this word exactly once",
+    )
+    ap.add_argument(
+        "--split",
+        default="train",
+        choices=["train", "validation", "test"],
+        help="dataset split",
+    )
     ap.add_argument("--dataset", default="range3/wiki40b-ja", help="HF dataset name")
-    ap.add_argument("--streaming", action="store_true", help="use streaming=True (no full download)")
-    ap.add_argument("--max_len", type=int, default=120, help="max sentence length (0 disables)")
+    ap.add_argument(
+        "--streaming", action="store_true", help="use streaming=True (no full download)"
+    )
+    ap.add_argument(
+        "--max_len", type=int, default=120, help="max sentence length (0 disables)"
+    )
     ap.add_argument("--min_len", type=int, default=1, help="min sentence length")
-    ap.add_argument("--max_lines", type=int, default=200000, help="stop after N lines written")
-    ap.add_argument("--text_filter", default=None, help="optional substring filter (must be contained)")
-    ap.add_argument("--dedup", action="store_true", help="deduplicate lines (memory heavy if huge)")
+    ap.add_argument(
+        "--max_lines", type=int, default=200000, help="stop after N lines written"
+    )
+    ap.add_argument(
+        "--text_filter",
+        default=None,
+        help="optional substring filter (must be contained)",
+    )
+    ap.add_argument(
+        "--dedup", action="store_true", help="deduplicate lines (memory heavy if huge)"
+    )
     args = ap.parse_args()
 
     target = args.target_word
@@ -118,7 +139,10 @@ def main() -> None:
                         print(f"[progress] written={written}", file=sys.stderr)
 
                     if written >= args.max_lines:
-                        print(f"[done] reached max_lines={args.max_lines}", file=sys.stderr)
+                        print(
+                            f"[done] reached max_lines={args.max_lines}",
+                            file=sys.stderr,
+                        )
                         return
 
     print(f"[done] written={written} -> {args.out}", file=sys.stderr)
