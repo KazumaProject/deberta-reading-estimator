@@ -150,7 +150,7 @@ class MeCabSegmenter:
                 "  - Use GenericTagger explicitly:\n"
                 "      --segmenter-config '{\"force_generic\":true}'\n"
                 "  - Provide dictionary dir explicitly (example path varies):\n"
-                "      --segmenter-config '{\"dict_dir\":\"/usr/lib/x86_64-linux-gnu/mecab/dic/ipadic\"}'\n"
+                '      --segmenter-config \'{"dict_dir":"/usr/lib/x86_64-linux-gnu/mecab/dic/ipadic"}\'\n'
             ) from init_err
 
     @classmethod

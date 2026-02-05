@@ -17,6 +17,7 @@ import numpy as np
 import torch
 from transformers import AutoModel, AutoModelForMaskedLM, AutoTokenizer
 
+
 # -------------------------
 # Optional progress (tqdm)
 # -------------------------
@@ -79,8 +80,7 @@ class Segmenter(Protocol):
       - tokenize(text) -> List[Morph]
     """
 
-    def tokenize(self, text: str) -> List[Morph]:
-        ...
+    def tokenize(self, text: str) -> List[Morph]: ...
 
 
 class ConfigurableSegmenter(Protocol):
@@ -90,8 +90,7 @@ class ConfigurableSegmenter(Protocol):
     """
 
     @classmethod
-    def from_config(cls, config: Dict[str, Any]) -> Segmenter:
-        ...
+    def from_config(cls, config: Dict[str, Any]) -> Segmenter: ...
 
 
 class WhitespaceSegmenter:
@@ -265,7 +264,9 @@ def _load_segmenter_from_plugin(spec: str, config: Dict[str, Any]) -> Segmenter:
     return cast(Segmenter, seg)
 
 
-def _build_segmenter(name: str, *, config: Dict[str, Any]) -> Tuple[Segmenter, str, Dict[str, Any]]:
+def _build_segmenter(
+    name: str, *, config: Dict[str, Any]
+) -> Tuple[Segmenter, str, Dict[str, Any]]:
     """
     Returns (segmenter_instance, segmenter_name_for_metadata, segmenter_config_for_metadata)
     name:
@@ -301,7 +302,9 @@ def _build_segmenter(name: str, *, config: Dict[str, Any]) -> Tuple[Segmenter, s
         return seg, "juman", meta
 
     if low != "auto":
-        raise ValueError("--segmenter must be auto/sudachi/juman/whitespace or 'module:ClassName' plugin")
+        raise ValueError(
+            "--segmenter must be auto/sudachi/juman/whitespace or 'module:ClassName' plugin"
+        )
 
     # auto
     try:
@@ -367,9 +370,13 @@ class ReadingEstimator:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
 
         if self.tokenizer.mask_token is None or self.tokenizer.mask_token_id is None:
-            raise ValueError("Tokenizer has no mask_token/mask_token_id. Requires masked-LM tokenizer.")
+            raise ValueError(
+                "Tokenizer has no mask_token/mask_token_id. Requires masked-LM tokenizer."
+            )
 
-        self.device = "cuda" if (device == "cuda" and torch.cuda.is_available()) else "cpu"
+        self.device = (
+            "cuda" if (device == "cuda" and torch.cuda.is_available()) else "cpu"
+        )
         self.representation: Representation = representation
         self.batch_size = batch_size
         self.show_progress = show_progress
@@ -380,7 +387,9 @@ class ReadingEstimator:
             self.segmenter = segmenter
             self.segmenter_name = segmenter_name
         else:
-            seg, seg_name_meta, seg_conf_meta = _build_segmenter(segmenter_name, config=self.segmenter_config)
+            seg, seg_name_meta, seg_conf_meta = _build_segmenter(
+                segmenter_name, config=self.segmenter_config
+            )
             self.segmenter = seg
             self.segmenter_name = seg_name_meta
             self.segmenter_config = seg_conf_meta
@@ -423,14 +432,18 @@ class ReadingEstimator:
     def _prepare_references_inplace(self) -> None:
         for key, values in self.references.items():
             for reading, texts in values.items():
-                self.references[key][reading] = [self._split_reference(t) for t in texts]
+                self.references[key][reading] = [
+                    self._split_reference(t) for t in texts
+                ]
 
     def update_references(self, references: Dict[str, Dict[str, List[str]]]) -> None:
         self.references = deepcopy(references)
         self._prepare_references_inplace()
         self.reference_vectors = self._calculate_reference_vectors()
 
-    def _calculate_reference_vectors(self) -> Dict[str, Dict[str, List[Tuple[np.ndarray, str]]]]:
+    def _calculate_reference_vectors(
+        self,
+    ) -> Dict[str, Dict[str, List[Tuple[np.ndarray, str]]]]:
         tqdm = _get_tqdm()
         it_desc = (
             f"Compiling references ({self.representation}, bs={self.batch_size}, device={self.device}, "
@@ -468,7 +481,9 @@ class ReadingEstimator:
             batch = flat_items[i : i + self.batch_size]
             texts = [t for _, _, t in batch]
 
-            inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True)
+            inputs = self.tokenizer(
+                texts, return_tensors="pt", padding=True, truncation=True
+            )
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
             with torch.inference_mode():
@@ -479,7 +494,9 @@ class ReadingEstimator:
                 else:
                     lg = getattr(outputs, "logits", None)
                     if lg is None:
-                        raise ValueError("Model outputs have no logits; use --repr hidden")
+                        raise ValueError(
+                            "Model outputs have no logits; use --repr hidden"
+                        )
                     hs = None
 
             input_ids = inputs["input_ids"]
@@ -548,7 +565,9 @@ class ReadingEstimator:
         if not masked_texts:
             return []
 
-        inputs = self.tokenizer(masked_texts, return_tensors="pt", padding=True, truncation=True)
+        inputs = self.tokenizer(
+            masked_texts, return_tensors="pt", padding=True, truncation=True
+        )
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         with torch.inference_mode():
@@ -622,7 +641,10 @@ class ReadingEstimator:
                 surf = m.surf
                 if surf in self.references and counts.get(surf, 0) == 1:
                     masked_spaced = " ".join(
-                        [self.tokenizer.mask_token if j == idx else mrphs[j].surf for j in range(len(mrphs))]
+                        [
+                            self.tokenizer.mask_token if j == idx else mrphs[j].surf
+                            for j in range(len(mrphs))
+                        ]
                     ).strip()
                     masked_spaced = self._normalize_mask_in_text(masked_spaced)
                     all_masked_texts.append(masked_spaced)
@@ -633,11 +655,17 @@ class ReadingEstimator:
         if not all_masked_texts:
             return outputs
 
-        chooser = self._get_most_similar_reading if self.evaluation_type == "most_similar" else self._get_average_similar_reading
+        chooser = (
+            self._get_most_similar_reading
+            if self.evaluation_type == "most_similar"
+            else self._get_average_similar_reading
+        )
 
         inferred_vecs: List[np.ndarray] = []
         for i in range(0, len(all_masked_texts), self.batch_size):
-            inferred_vecs.extend(self._infer_mask_vectors(all_masked_texts[i : i + self.batch_size]))
+            inferred_vecs.extend(
+                self._infer_mask_vectors(all_masked_texts[i : i + self.batch_size])
+            )
 
         for mi, (ti, token_idx, surf, fallback_yomi) in enumerate(masked_map):
             vec = inferred_vecs[mi]
@@ -647,7 +675,9 @@ class ReadingEstimator:
 
         return outputs
 
-    def get_optimized_reading(self, word: str, left_context: str, right_context: str, current_reading: str) -> str:
+    def get_optimized_reading(
+        self, word: str, left_context: str, right_context: str, current_reading: str
+    ) -> str:
         if word not in self.references:
             return current_reading
 
@@ -656,7 +686,9 @@ class ReadingEstimator:
         left_spaced = " ".join([m.surf for m in left_m]).strip()
         right_spaced = " ".join([m.surf for m in right_m]).strip()
 
-        masked_text = f"{left_spaced} {self.tokenizer.mask_token} {right_spaced}".strip()
+        masked_text = (
+            f"{left_spaced} {self.tokenizer.mask_token} {right_spaced}".strip()
+        )
         masked_text = self._normalize_mask_in_text(masked_text)
 
         vec = self._infer_mask_vector(masked_text)
@@ -695,8 +727,16 @@ class ReadingEstimator:
         with open(path, "rb") as f:
             loaded = pickle.load(f)
 
-        seg_name = segmenter_name if segmenter_name is not None else loaded.get("segmenter_name", "auto")
-        seg_conf = segmenter_config if segmenter_config is not None else loaded.get("segmenter_config", {}) or {}
+        seg_name = (
+            segmenter_name
+            if segmenter_name is not None
+            else loaded.get("segmenter_name", "auto")
+        )
+        seg_conf = (
+            segmenter_config
+            if segmenter_config is not None
+            else loaded.get("segmenter_config", {}) or {}
+        )
 
         obj = ReadingEstimator(
             model_name=loaded["model_name"],
@@ -720,10 +760,17 @@ class ReadingEstimator:
 # CLI helpers
 # -------------------------
 def _build_argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="ReadingEstimator CLI (segmenter-agnostic + ruri)")
+    p = argparse.ArgumentParser(
+        description="ReadingEstimator CLI (segmenter-agnostic + ruri)"
+    )
 
     p.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="cpu/cuda")
-    p.add_argument("--batch-size", type=int, default=16, help="batch size for compiling & inference")
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=16,
+        help="batch size for compiling & inference",
+    )
     p.add_argument("--no-progress", action="store_true", help="disable progress output")
 
     # segmenter
@@ -732,7 +779,12 @@ def _build_argparser() -> argparse.ArgumentParser:
         default="auto",
         help="segmenter backend: auto/sudachi/juman/whitespace OR plugin 'module:ClassName'",
     )
-    p.add_argument("--sudachi-mode", default="C", choices=["A", "B", "C"], help="Sudachi split mode (A/B/C)")
+    p.add_argument(
+        "--sudachi-mode",
+        default="C",
+        choices=["A", "B", "C"],
+        help="Sudachi split mode (A/B/C)",
+    )
 
     # Juman config
     p.add_argument(
@@ -741,7 +793,11 @@ def _build_argparser() -> argparse.ArgumentParser:
         default=10.0,
         help="Juman++ timeout seconds for apply_to_sentence (default: 10.0)",
     )
-    p.add_argument("--juman-rcfile", default=None, help="Optional path to jumanpp rcfile (passed as -r <rcfile>)")
+    p.add_argument(
+        "--juman-rcfile",
+        default=None,
+        help="Optional path to jumanpp rcfile (passed as -r <rcfile>)",
+    )
 
     # NEW: startup options
     p.add_argument(
@@ -764,21 +820,45 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--segmenter-config",
         default=None,
-        help="JSON string for plugin/segmenter config. Example: '{\"foo\":1,\"bar\":\"x\"}'",
+        help='JSON string for plugin/segmenter config. Example: \'{"foo":1,"bar":"x"}\'',
     )
 
     # model
     p.add_argument("--model", default="cl-nagoya/ruri-v3-30m", help="HF model name")
-    p.add_argument("--eval", default="most_similar", choices=["most_similar", "average"], help="evaluation type")
-    p.add_argument("--repr", default="hidden", choices=["hidden", "logits"], help="representation: hidden / logits")
+    p.add_argument(
+        "--eval",
+        default="most_similar",
+        choices=["most_similar", "average"],
+        help="evaluation type",
+    )
+    p.add_argument(
+        "--repr",
+        default="hidden",
+        choices=["hidden", "logits"],
+        help="representation: hidden / logits",
+    )
 
     # compiled or references
     p.add_argument("--compiled", default=None, help="compiled pkl path to load")
-    p.add_argument("--references", default=None, help="references.json path (used when not using --compiled)")
-    p.add_argument("--build-compiled", default=None, help="output path to save compiled pkl, then exit")
+    p.add_argument(
+        "--references",
+        default=None,
+        help="references.json path (used when not using --compiled)",
+    )
+    p.add_argument(
+        "--build-compiled",
+        default=None,
+        help="output path to save compiled pkl, then exit",
+    )
 
     # input (multi)
-    p.add_argument("-t", "--text", action="append", default=None, help="input text (can be specified multiple times)")
+    p.add_argument(
+        "-t",
+        "--text",
+        action="append",
+        default=None,
+        help="input text (can be specified multiple times)",
+    )
     p.add_argument(
         "-f",
         "--file",
@@ -786,8 +866,16 @@ def _build_argparser() -> argparse.ArgumentParser:
         default=None,
         help="read input texts from file (utf-8). one line = one input. can be specified multiple times",
     )
-    p.add_argument("--stdin", action="store_true", help="read additional input texts from stdin (one line = one input)")
-    p.add_argument("--interactive", action="store_true", help="interactive REPL mode (single-line loop)")
+    p.add_argument(
+        "--stdin",
+        action="store_true",
+        help="read additional input texts from stdin (one line = one input)",
+    )
+    p.add_argument(
+        "--interactive",
+        action="store_true",
+        help="interactive REPL mode (single-line loop)",
+    )
 
     # output
     p.add_argument(
@@ -799,11 +887,19 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--out", default=None, help="output file path (default: stdout)")
 
     # timing
-    p.add_argument("--time", action="store_true", help="print inference time (seconds) to stderr")
-    p.add_argument("--load-time", action="store_true", help="print model/loading time (seconds) to stderr")
+    p.add_argument(
+        "--time", action="store_true", help="print inference time (seconds) to stderr"
+    )
+    p.add_argument(
+        "--load-time",
+        action="store_true",
+        help="print model/loading time (seconds) to stderr",
+    )
 
     # optimized reading
-    p.add_argument("--opt-word", default=None, help="word for get_optimized_reading (e.g. 水)")
+    p.add_argument(
+        "--opt-word", default=None, help="word for get_optimized_reading (e.g. 水)"
+    )
     p.add_argument("--opt-left", default="", help="left context")
     p.add_argument("--opt-right", default="", help="right context")
     p.add_argument("--opt-current", default="", help="current reading")
@@ -906,7 +1002,9 @@ def main() -> None:
     # build-compiled mode
     if args.build_compiled is not None:
         if not args.references:
-            raise SystemExit("ERROR: --build-compiled requires --references references.json")
+            raise SystemExit(
+                "ERROR: --build-compiled requires --references references.json"
+            )
 
         refs = _load_references(args.references)
 
@@ -943,7 +1041,9 @@ def main() -> None:
         )
     else:
         if not args.references:
-            raise SystemExit("ERROR: Provide --compiled predictor.pkl OR --references references.json")
+            raise SystemExit(
+                "ERROR: Provide --compiled predictor.pkl OR --references references.json"
+            )
         refs = _load_references(args.references)
         predictor = ReadingEstimator(
             model_name=args.model,
@@ -995,11 +1095,17 @@ def main() -> None:
                 out = _format_one(predicted, args.format)
                 _write_output(args.out, out + "\n")
             elif args.format == "json":
-                out = json.dumps([{"word": w, "reading": y} for w, y in predicted], ensure_ascii=False)
+                out = json.dumps(
+                    [{"word": w, "reading": y} for w, y in predicted],
+                    ensure_ascii=False,
+                )
                 _write_output(args.out, out + "\n")
             else:  # jsonl
                 out = json.dumps(
-                    {"input": line, "tokens": [{"word": w, "reading": y} for w, y in predicted]},
+                    {
+                        "input": line,
+                        "tokens": [{"word": w, "reading": y} for w, y in predicted],
+                    },
                     ensure_ascii=False,
                 )
                 _write_output(args.out, out + "\n")
@@ -1011,7 +1117,9 @@ def main() -> None:
     # batch inputs
     inputs = _collect_inputs(args)
     if not inputs:
-        raise SystemExit("ERROR: No input. Provide --text/--file/--stdin or use --interactive.")
+        raise SystemExit(
+            "ERROR: No input. Provide --text/--file/--stdin or use --interactive."
+        )
 
     t0 = time.perf_counter()
     batch_predicted = predictor.get_reading_predictions(inputs)
@@ -1023,18 +1131,29 @@ def main() -> None:
     elif args.format == "json":
         obj: List[Any] = []
         for inp, pairs in zip(inputs, batch_predicted):
-            obj.append({"input": inp, "tokens": [{"word": w, "reading": y} for w, y in pairs]})
+            obj.append(
+                {"input": inp, "tokens": [{"word": w, "reading": y} for w, y in pairs]}
+            )
         _write_output(args.out, json.dumps(obj, ensure_ascii=False) + "\n")
     else:  # jsonl
         out_lines: List[str] = []
         for inp, pairs in zip(inputs, batch_predicted):
             out_lines.append(
-                json.dumps({"input": inp, "tokens": [{"word": w, "reading": y} for w, y in pairs]}, ensure_ascii=False)
+                json.dumps(
+                    {
+                        "input": inp,
+                        "tokens": [{"word": w, "reading": y} for w, y in pairs],
+                    },
+                    ensure_ascii=False,
+                )
             )
         _write_output(args.out, "\n".join(out_lines) + "\n")
 
     if args.time:
-        print(f"[time] infer_total_sec={elapsed:.6f} (n_inputs={len(inputs)})", file=sys.stderr)
+        print(
+            f"[time] infer_total_sec={elapsed:.6f} (n_inputs={len(inputs)})",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":
